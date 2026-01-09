@@ -10,9 +10,27 @@ on:
         description: 'Version tag (e.g., v1.0.0)'
         required: true
         type: string
-
-env:
-  LLAMA_CPP_VERSION: b4313  # Update this to match llama.cpp commit/tag
+      platform:
+        description: 'Platform to build'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux
+          - macos
+          - windows
+      backend:
+        description: 'Backend to build'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - cpu
+          - metal
+          - cuda
+          - rocm
 
 # note: run this workflow one at a time for better cache reuse
 concurrency:
@@ -23,6 +41,10 @@ jobs:
   build-matrix:
     name: Build ${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
+    if: |
+      (github.event_name == 'push') ||
+      ((inputs.platform == 'all' || inputs.platform == matrix.platform) &&
+       (inputs.backend == 'all' || inputs.backend == matrix.backend))
 
     strategy:
       fail-fast: false
@@ -88,6 +110,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Windows CUDA toolkit
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows' && matrix.backend == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
       # Build with CMake
       - name: Build llama-server
         shell: bash
@@ -118,6 +149,9 @@ jobs:
               CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL_USE_BF16=ON"
               CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL_EMBED_LIBRARY=ON"
             fi
+          elif [ "${{ runner.os }}" == "Windows" ]; then
+            # Disable CURL on Windows (not easily available)
+            CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_CURL=OFF"
           fi
 
           # Backend-specific configuration
@@ -234,7 +268,7 @@ jobs:
 
           # Create version file
           echo "llama-server" > release/version.txt
-          echo "${{ env.LLAMA_CPP_VERSION }}" >> release/version.txt
+          echo "${{ github.ref_name }}" >> release/version.txt
           echo "Backend: ${{ matrix.backend }}" >> release/version.txt
           echo "Platform: ${{ matrix.platform }}-${{ matrix.arch }}" >> release/version.txt
           echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
@@ -288,6 +322,10 @@ jobs:
     name: Build linux-x86_64-cuda
     runs-on: ubuntu-22.04
     container: nvidia/cuda:12.4.0-devel-ubuntu22.04
+    if: |
+      (github.event_name == 'push') ||
+      ((inputs.platform == 'all' || inputs.platform == 'linux') &&
+       (inputs.backend == 'all' || inputs.backend == 'cuda'))
 
     steps:
       - name: Checkout repository
@@ -372,7 +410,7 @@ jobs:
 
           # Create version file
           echo "llama-server" > release/version.txt
-          echo "${{ env.LLAMA_CPP_VERSION }}" >> release/version.txt
+          echo "${{ github.ref_name }}" >> release/version.txt
           echo "Backend: cuda" >> release/version.txt
           echo "Platform: linux-x86_64" >> release/version.txt
           echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
@@ -406,6 +444,10 @@ jobs:
     name: Build linux-x86_64-rocm
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:6.1.2
+    if: |
+      (github.event_name == 'push') ||
+      ((inputs.platform == 'all' || inputs.platform == 'linux') &&
+       (inputs.backend == 'all' || inputs.backend == 'rocm'))
 
     steps:
       - name: Checkout repository
@@ -489,7 +531,7 @@ jobs:
 
           # Create version file
           echo "llama-server" > release/version.txt
-          echo "${{ env.LLAMA_CPP_VERSION }}" >> release/version.txt
+          echo "${{ github.ref_name }}" >> release/version.txt
           echo "Backend: rocm" >> release/version.txt
           echo "Platform: linux-x86_64" >> release/version.txt
           echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
@@ -552,7 +594,7 @@ jobs:
           body: |
             ## llama-server Release ${{ github.ref_name }}
 
-            Based on llama.cpp version: `${{ env.LLAMA_CPP_VERSION }}`
+            Based on llama.cpp version: `${{ github.ref_name }}`
 
             ### Supported Platforms and Backends
 
