@@ -36,10 +36,6 @@ jobs:
   build-matrix:
     name: Build ${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
-    if: |
-      (github.event_name == 'push') ||
-      ((inputs.platform == 'all' || inputs.platform == matrix.platform) &&
-       (inputs.backend == 'all' || inputs.backend == matrix.backend))
 
     strategy:
       fail-fast: false
@@ -76,11 +72,39 @@ jobs:
             cuda_version: "12.4.0"
 
     steps:
+      # Check if this matrix entry should run based on filters
+      - name: Check build filter
+        id: filter
+        shell: bash
+        run: |
+          PLATFORM_MATCH="false"
+          BACKEND_MATCH="false"
+
+          # Platform filter
+          if [ "${{ inputs.platform }}" == "all" ] || [ "${{ inputs.platform }}" == "" ] || [ "${{ inputs.platform }}" == "${{ matrix.platform }}" ]; then
+            PLATFORM_MATCH="true"
+          fi
+
+          # Backend filter
+          if [ "${{ inputs.backend }}" == "all" ] || [ "${{ inputs.backend }}" == "" ] || [ "${{ inputs.backend }}" == "${{ matrix.backend }}" ]; then
+            BACKEND_MATCH="true"
+          fi
+
+          if [ "$PLATFORM_MATCH" == "true" ] && [ "$BACKEND_MATCH" == "true" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "✅ Build will run: platform=${{ matrix.platform }}, backend=${{ matrix.backend }}"
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping: platform=${{ matrix.platform }}, backend=${{ matrix.backend }} (filter: platform=${{ inputs.platform }}, backend=${{ inputs.backend }})"
+          fi
+
       - name: Checkout repository
+        if: steps.filter.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       # ccache for faster rebuilds
       - name: ccache
+        if: steps.filter.outputs.should_run == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
@@ -89,25 +113,25 @@ jobs:
 
       # Linux dependencies
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+        if: steps.filter.outputs.should_run == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libcurl4-openssl-dev
 
       # macOS dependencies
       - name: Install macOS dependencies
-        if: runner.os == 'macOS'
+        if: steps.filter.outputs.should_run == 'true' && runner.os == 'macOS'
         run: |
           brew install cmake
 
       # Windows dependencies (CMake is pre-installed)
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows'
+        if: steps.filter.outputs.should_run == 'true' && runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       # Windows CUDA toolkit
       - name: Install CUDA toolkit (Windows)
-        if: runner.os == 'Windows' && matrix.backend == 'cuda'
+        if: steps.filter.outputs.should_run == 'true' && runner.os == 'Windows' && matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           cuda: ${{ matrix.cuda_version }}
@@ -116,6 +140,7 @@ jobs:
 
       # Build with CMake
       - name: Build llama-server
+        if: steps.filter.outputs.should_run == 'true'
         shell: bash
         run: |
           mkdir build
@@ -170,6 +195,7 @@ jobs:
 
       # Find the built binary
       - name: Find binary path
+        if: steps.filter.outputs.should_run == 'true'
         id: find_binary
         shell: bash
         run: |
@@ -199,6 +225,7 @@ jobs:
 
       # Create release directory structure
       - name: Prepare release archive
+        if: steps.filter.outputs.should_run == 'true'
         shell: bash
         run: |
           mkdir -p release
@@ -278,6 +305,7 @@ jobs:
 
       # Create archive
       - name: Create archive
+        if: steps.filter.outputs.should_run == 'true'
         shell: bash
         run: |
           ARCHIVE_NAME="llama-server-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}"
@@ -292,6 +320,7 @@ jobs:
 
       # Generate checksum
       - name: Generate checksum
+        if: steps.filter.outputs.should_run == 'true'
         shell: bash
         run: |
           if [ "${{ runner.os }}" == "Windows" ]; then
@@ -304,6 +333,7 @@ jobs:
 
       # Upload artifacts
       - name: Upload artifact
+        if: steps.filter.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: llama-server-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
