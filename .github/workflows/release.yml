@@ -23,21 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 - CPU, CUDA, ROCm
+          # Linux x86_64 - CPU only (CUDA and ROCm are in separate jobs below)
           - os: ubuntu-22.04
             platform: linux
             arch: x86_64
             backend: cpu
-          - os: ubuntu-22.04
-            platform: linux
-            arch: x86_64
-            backend: cuda
-            cuda_version: "12.4.0"
-          - os: ubuntu-22.04
-            platform: linux
-            arch: x86_64
-            backend: rocm
-            rocm_version: "6.0"
 
           # Linux aarch64 - CPU only
           - os: ubuntu-22.04
@@ -67,39 +57,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Linux CUDA setup
-      - name: Install CUDA (Linux)
-        if: matrix.backend == 'cuda' && runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.14
+      # ccache for faster rebuilds
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart"]'
-
-      # Linux ROCm setup
-      - name: Install ROCm (Linux)
-        if: matrix.backend == 'rocm' && runner.os == 'Linux'
-        run: |
-          wget https://repo.radeon.com/amdgpu-install/${{ matrix.rocm_version }}/ubuntu/jammy/amdgpu-install_${{ matrix.rocm_version }}.deb
-          sudo apt-get update
-          sudo apt-get install -y ./amdgpu-install_${{ matrix.rocm_version }}.deb
-          sudo amdgpu-install --usecase=rocm --no-dkms -y
-
-      # Windows CUDA setup
-      - name: Install CUDA (Windows)
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.14
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart"]'
+          key: ${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
+          max-size: 500M
+          update-package-index: true
 
       # Linux dependencies
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y build-essential cmake libcurl4-openssl-dev
 
       # macOS dependencies
       - name: Install macOS dependencies
@@ -119,9 +90,32 @@ jobs:
           mkdir build
           cd build
 
-          # Configure CMake based on backend
+          # Base CMake configuration with optimization flags
           CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_STATIC=OFF -DLLAMA_SERVER_ONLY=ON"
 
+          # Portability and compatibility flags
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_NATIVE=OFF"              # Don't optimize for build machine CPU
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_BACKEND_DL=ON"           # Dynamic backend loading
+
+          # Platform-specific RPATH for automatic library discovery
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INSTALL_RPATH='\$ORIGIN'"
+            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+            # Multi-CPU variant support for x86_64
+            if [ "${{ matrix.arch }}" == "x86_64" ]; then
+              CMAKE_ARGS="$CMAKE_ARGS -DGGML_CPU_ALL_VARIANTS=ON"
+            fi
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INSTALL_RPATH='@loader_path'"
+            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+            # Metal-specific optimizations
+            if [ "${{ matrix.backend }}" == "metal" ]; then
+              CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL_USE_BF16=ON"
+              CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL_EMBED_LIBRARY=ON"
+            fi
+          fi
+
+          # Backend-specific configuration
           if [ "${{ matrix.backend }}" == "cuda" ]; then
             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=52;61;70;75;80;86;89;90"
           elif [ "${{ matrix.backend }}" == "rocm" ]; then
@@ -129,6 +123,10 @@ jobs:
           elif [ "${{ matrix.backend }}" == "metal" ]; then
             CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON"
           fi
+
+          # Enable ccache for faster rebuilds
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
           cmake .. $CMAKE_ARGS
           cmake --build . --config Release --target llama-server -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -257,9 +255,244 @@ jobs:
             ${{ env.ARCHIVE_FILE }}.sha256
           retention-days: 7
 
+  # Separate job for CUDA (requires Docker container)
+  build-cuda:
+    name: Build linux-x86_64-cuda
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential git cmake libcurl4-openssl-dev curl
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-x86_64-cuda
+          max-size: 500M
+
+      - name: Build llama-server
+        run: |
+          mkdir build
+          cd build
+
+          # Base CMake configuration with optimization flags
+          CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_STATIC=OFF -DLLAMA_SERVER_ONLY=ON"
+
+          # Portability and compatibility flags
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_NATIVE=OFF"              # Don't optimize for build machine CPU
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_BACKEND_DL=ON"           # Dynamic backend loading
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_CPU_ALL_VARIANTS=ON"    # Multi-CPU variant support
+
+          # RPATH for automatic library discovery
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INSTALL_RPATH='\$ORIGIN'"
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+
+          # CUDA backend
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=52;61;70;75;80;86;89;90"
+
+          # Enable ccache
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+          cmake .. $CMAKE_ARGS
+          cmake --build . --config Release --target llama-server -j$(nproc)
+
+          echo "Build complete"
+          ls -lah bin/
+
+      - name: Find binary path
+        id: find_binary
+        run: |
+          BINARY_PATH=$(find build/bin -name "llama-server" -type f | head -n 1)
+          if [ -z "$BINARY_PATH" ]; then
+            echo "ERROR: Binary not found!"
+            exit 1
+          fi
+          echo "binary_path=$BINARY_PATH" >> $GITHUB_OUTPUT
+          echo "Found binary at: $BINARY_PATH"
+
+      - name: Prepare release archive
+        run: |
+          mkdir -p release
+
+          # Copy binary
+          cp "${{ steps.find_binary.outputs.binary_path }}" "release/llama-server"
+
+          # Copy shared libraries
+          BUILD_LIB_DIR="build/ggml/src"
+          if [ -d "$BUILD_LIB_DIR" ]; then
+            mkdir -p release/lib
+            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            if [ -d "build/bin" ]; then
+              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            fi
+            echo "Packaged shared libraries:"
+            ls -lh release/lib/
+          fi
+
+          # Create version file
+          echo "llama-server" > release/version.txt
+          echo "${{ env.LLAMA_CPP_VERSION }}" >> release/version.txt
+          echo "Backend: cuda" >> release/version.txt
+          echo "Platform: linux-x86_64" >> release/version.txt
+          echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
+
+          chmod +x "release/llama-server"
+
+          echo "Release directory contents:"
+          ls -lah release/
+
+      - name: Create archive
+        run: |
+          tar czf "llama-server-linux-x86_64-cuda.tar.gz" -C release .
+          echo "ARCHIVE_FILE=llama-server-linux-x86_64-cuda.tar.gz" >> $GITHUB_ENV
+
+      - name: Generate checksum
+        run: |
+          shasum -a 256 "$ARCHIVE_FILE" > "${ARCHIVE_FILE}.sha256"
+          cat "${ARCHIVE_FILE}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-linux-x86_64-cuda
+          path: |
+            ${{ env.ARCHIVE_FILE }}
+            ${{ env.ARCHIVE_FILE }}.sha256
+          retention-days: 7
+
+  # Separate job for ROCm (requires Docker container)
+  build-rocm:
+    name: Build linux-x86_64-rocm
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:6.1.2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git cmake rocblas-dev hipblas-dev libssl-dev rocwmma-dev curl libcurl4-openssl-dev
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-x86_64-rocm
+          max-size: 500M
+
+      - name: Build llama-server
+        run: |
+          mkdir build
+          cd build
+
+          # Base CMake configuration with optimization flags
+          CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_STATIC=OFF -DLLAMA_SERVER_ONLY=ON"
+
+          # Portability and compatibility flags
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_NATIVE=OFF"              # Don't optimize for build machine CPU
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_BACKEND_DL=ON"           # Dynamic backend loading
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_CPU_ALL_VARIANTS=ON"    # Multi-CPU variant support
+
+          # RPATH for automatic library discovery
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INSTALL_RPATH='\$ORIGIN'"
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+
+          # ROCm backend
+          CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIPBLAS=ON"
+
+          # Enable ccache
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+          cmake .. $CMAKE_ARGS
+          cmake --build . --config Release --target llama-server -j$(nproc)
+
+          echo "Build complete"
+          ls -lah bin/
+
+      - name: Find binary path
+        id: find_binary
+        run: |
+          BINARY_PATH=$(find build/bin -name "llama-server" -type f | head -n 1)
+          if [ -z "$BINARY_PATH" ]; then
+            echo "ERROR: Binary not found!"
+            exit 1
+          fi
+          echo "binary_path=$BINARY_PATH" >> $GITHUB_OUTPUT
+          echo "Found binary at: $BINARY_PATH"
+
+      - name: Prepare release archive
+        run: |
+          mkdir -p release
+
+          # Copy binary
+          cp "${{ steps.find_binary.outputs.binary_path }}" "release/llama-server"
+
+          # Copy shared libraries
+          BUILD_LIB_DIR="build/ggml/src"
+          if [ -d "$BUILD_LIB_DIR" ]; then
+            mkdir -p release/lib
+            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            if [ -d "build/bin" ]; then
+              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            fi
+            echo "Packaged shared libraries:"
+            ls -lh release/lib/
+          fi
+
+          # Create version file
+          echo "llama-server" > release/version.txt
+          echo "${{ env.LLAMA_CPP_VERSION }}" >> release/version.txt
+          echo "Backend: rocm" >> release/version.txt
+          echo "Platform: linux-x86_64" >> release/version.txt
+          echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
+
+          chmod +x "release/llama-server"
+
+          echo "Release directory contents:"
+          ls -lah release/
+
+      - name: Create archive
+        run: |
+          tar czf "llama-server-linux-x86_64-rocm.tar.gz" -C release .
+          echo "ARCHIVE_FILE=llama-server-linux-x86_64-rocm.tar.gz" >> $GITHUB_ENV
+
+      - name: Generate checksum
+        run: |
+          shasum -a 256 "$ARCHIVE_FILE" > "${ARCHIVE_FILE}.sha256"
+          cat "${ARCHIVE_FILE}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-linux-x86_64-rocm
+          path: |
+            ${{ env.ARCHIVE_FILE }}
+            ${{ env.ARCHIVE_FILE }}.sha256
+          retention-days: 7
+
   create-release:
     name: Create GitHub Release
-    needs: build-matrix
+    needs: [build-matrix, build-cuda, build-rocm]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -304,12 +537,12 @@ jobs:
 
             1. Download the appropriate archive for your platform and GPU backend
             2. Extract the archive
-            3. For GPU builds on Linux, set `LD_LIBRARY_PATH` to include the `lib/` directory:
+            3. The `llama-server` binary is ready to use:
                ```bash
-               export LD_LIBRARY_PATH="$PWD/lib:$LD_LIBRARY_PATH"
                ./llama-server --help
                ```
-            4. The `llama-server` binary is ready to use
+
+            **Note**: GPU builds include shared libraries in the `lib/` directory. These are automatically discovered via RPATH - no need to set `LD_LIBRARY_PATH`.
 
             ### Checksums
 
