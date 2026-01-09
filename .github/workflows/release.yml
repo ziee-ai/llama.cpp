@@ -172,22 +172,66 @@ jobs:
           # Copy binary
           cp "${{ steps.find_binary.outputs.binary_path }}" "release/${{ steps.find_binary.outputs.binary_name }}"
 
-          # For GPU builds (CUDA/ROCm): Copy shared libraries produced by the build
-          if [[ "${{ matrix.backend }}" == "cuda" || "${{ matrix.backend }}" == "rocm" ]] && [ "${{ runner.os }}" != "Windows" ]; then
-            # Find the build output directory where libraries are
-            BUILD_LIB_DIR="build/ggml/src"
+          # For builds with dynamic backends: Copy shared libraries
+          # This includes CUDA, ROCm, Metal, and also CPU builds with GGML_BACKEND_DL=ON
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            # Windows: Copy DLLs from build output
+            # Find the build output directory (could be bin/Release or bin)
+            if [ -d "build/bin/Release" ]; then
+              BUILD_LIB_DIR="build/bin/Release"
+            else
+              BUILD_LIB_DIR="build/bin"
+            fi
+
+            echo "Copying DLLs from $BUILD_LIB_DIR"
+
+            # Copy all DLLs to release directory (Windows doesn't use lib subdirectory)
+            find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.dll" -exec cp {} release/ \;
+
+            # List what we copied
+            echo "Packaged DLLs:"
+            ls -lh release/*.dll 2>/dev/null || echo "No DLLs found"
+
+          else
+            # Unix (Linux/macOS): Copy shared libraries
+            # All builds use GGML_BACKEND_DL=ON, so we need to package backend plugins
+            mkdir -p release/lib
+
+            BUILD_LIB_DIR="build/bin"
 
             if [ -d "$BUILD_LIB_DIR" ]; then
-              # Create lib directory for shared libraries
-              mkdir -p release/lib
-
-              # Copy ALL .so files and symlinks from build output
               echo "Copying shared libraries from $BUILD_LIB_DIR"
-              find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
 
-              # Also check build/bin for any libraries
-              if [ -d "build/bin" ]; then
-                find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+              if [ "${{ runner.os }}" == "macOS" ]; then
+                # macOS: Copy dylibs (resolved, not symlinks) and backend .so files
+                for lib in libllama libggml libggml-base libmtmd; do
+                  if [ -f "$BUILD_LIB_DIR/${lib}.dylib" ]; then
+                    cp -H "$BUILD_LIB_DIR/${lib}.dylib" "release/lib/"
+                  fi
+                done
+
+                # Copy backend plugins (.so files)
+                find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.so" -exec cp {} release/lib/ \;
+
+                # Copy Metal shader files for runtime compilation (only for Metal builds)
+                if [ "${{ matrix.backend }}" == "metal" ]; then
+                  for shader in ggml-metal.metal ggml-common.h ggml-metal-impl.h; do
+                    if [ -f "$BUILD_LIB_DIR/$shader" ]; then
+                      cp "$BUILD_LIB_DIR/$shader" "release/lib/"
+                    fi
+                  done
+                fi
+
+                # Copy license files
+                find "$BUILD_LIB_DIR" -maxdepth 1 -name "LICENSE-*" -exec cp {} release/ \;
+              else
+                # Linux: Copy .so files and symlinks
+                find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+
+                # Also check build/ggml/src for additional libraries
+                if [ -d "build/ggml/src" ]; then
+                  find "build/ggml/src" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+                fi
               fi
 
               # List what we copied
@@ -195,8 +239,8 @@ jobs:
               ls -lh release/lib/ || echo "No libraries found"
             else
               echo "Warning: Expected library directory not found: $BUILD_LIB_DIR"
-              echo "Searching for .so files in build directory:"
-              find build -name "*.so" -o -name "*.so.*" || true
+              echo "Searching for library files in build directory:"
+              find build -name "*.so" -o -name "*.dylib" 2>/dev/null | head -20 || true
             fi
           fi
 
