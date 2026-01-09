@@ -172,76 +172,59 @@ jobs:
           # Copy binary
           cp "${{ steps.find_binary.outputs.binary_path }}" "release/${{ steps.find_binary.outputs.binary_name }}"
 
-          # For builds with dynamic backends: Copy shared libraries
-          # This includes CUDA, ROCm, Metal, and also CPU builds with GGML_BACKEND_DL=ON
+          # For builds with dynamic backends: Copy shared libraries to same directory as binary
+          # RPATH is set to $ORIGIN (Linux) or @loader_path (macOS), so libs must be alongside binary
+          if [ -d "build/bin/Release" ]; then
+            BUILD_LIB_DIR="build/bin/Release"
+          else
+            BUILD_LIB_DIR="build/bin"
+          fi
+
+          echo "Copying shared libraries from $BUILD_LIB_DIR"
+
           if [ "${{ runner.os }}" == "Windows" ]; then
-            # Windows: Copy DLLs from build output
-            # Find the build output directory (could be bin/Release or bin)
-            if [ -d "build/bin/Release" ]; then
-              BUILD_LIB_DIR="build/bin/Release"
-            else
-              BUILD_LIB_DIR="build/bin"
-            fi
-
-            echo "Copying DLLs from $BUILD_LIB_DIR"
-
-            # Copy all DLLs to release directory (Windows doesn't use lib subdirectory)
+            # Windows: Copy all DLLs
             find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.dll" -exec cp {} release/ \;
-
-            # List what we copied
             echo "Packaged DLLs:"
             ls -lh release/*.dll 2>/dev/null || echo "No DLLs found"
 
-          else
-            # Unix (Linux/macOS): Copy shared libraries
-            # All builds use GGML_BACKEND_DL=ON, so we need to package backend plugins
-            mkdir -p release/lib
-
-            BUILD_LIB_DIR="build/bin"
-
-            if [ -d "$BUILD_LIB_DIR" ]; then
-              echo "Copying shared libraries from $BUILD_LIB_DIR"
-
-              if [ "${{ runner.os }}" == "macOS" ]; then
-                # macOS: Copy dylibs (resolved, not symlinks) and backend .so files
-                for lib in libllama libggml libggml-base libmtmd; do
-                  if [ -f "$BUILD_LIB_DIR/${lib}.dylib" ]; then
-                    cp -H "$BUILD_LIB_DIR/${lib}.dylib" "release/lib/"
-                  fi
-                done
-
-                # Copy backend plugins (.so files)
-                find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.so" -exec cp {} release/lib/ \;
-
-                # Copy Metal shader files for runtime compilation (only for Metal builds)
-                if [ "${{ matrix.backend }}" == "metal" ]; then
-                  for shader in ggml-metal.metal ggml-common.h ggml-metal-impl.h; do
-                    if [ -f "$BUILD_LIB_DIR/$shader" ]; then
-                      cp "$BUILD_LIB_DIR/$shader" "release/lib/"
-                    fi
-                  done
-                fi
-
-                # Copy license files
-                find "$BUILD_LIB_DIR" -maxdepth 1 -name "LICENSE-*" -exec cp {} release/ \;
-              else
-                # Linux: Copy .so files and symlinks
-                find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
-
-                # Also check build/ggml/src for additional libraries
-                if [ -d "build/ggml/src" ]; then
-                  find "build/ggml/src" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
-                fi
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            # macOS: Copy dylibs (resolved, not symlinks) and backend .so files
+            for lib in libllama libggml libggml-base libmtmd; do
+              if [ -f "$BUILD_LIB_DIR/${lib}.dylib" ]; then
+                cp -H "$BUILD_LIB_DIR/${lib}.dylib" "release/"
               fi
+            done
 
-              # List what we copied
-              echo "Packaged shared libraries:"
-              ls -lh release/lib/ || echo "No libraries found"
-            else
-              echo "Warning: Expected library directory not found: $BUILD_LIB_DIR"
-              echo "Searching for library files in build directory:"
-              find build -name "*.so" -o -name "*.dylib" 2>/dev/null | head -20 || true
+            # Copy backend plugins (.so files)
+            find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.so" -exec cp {} release/ \;
+
+            # Copy Metal shader files for runtime compilation (only for Metal builds)
+            if [ "${{ matrix.backend }}" == "metal" ]; then
+              for shader in ggml-metal.metal ggml-common.h ggml-metal-impl.h; do
+                if [ -f "$BUILD_LIB_DIR/$shader" ]; then
+                  cp "$BUILD_LIB_DIR/$shader" "release/"
+                fi
+              done
             fi
+
+            # Copy license files
+            find "$BUILD_LIB_DIR" -maxdepth 1 -name "LICENSE-*" -exec cp {} release/ \;
+
+            echo "Packaged libraries:"
+            ls -lh release/*.dylib release/*.so 2>/dev/null || echo "No libraries found"
+
+          else
+            # Linux: Copy .so files and symlinks
+            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
+
+            # Also check build/ggml/src for additional libraries
+            if [ -d "build/ggml/src" ]; then
+              find "build/ggml/src" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
+            fi
+
+            echo "Packaged libraries:"
+            ls -lh release/*.so 2>/dev/null || echo "No libraries found"
           fi
 
           # Create version file
@@ -258,10 +241,6 @@ jobs:
 
           echo "Release directory contents:"
           ls -lah release/
-          if [ -d "release/lib" ]; then
-            echo "Libraries:"
-            ls -lah release/lib/
-          fi
 
       # Create archive
       - name: Create archive
