@@ -52,13 +52,6 @@ jobs:
             arch: x86_64
             backend: cpu
 
-          # Linux aarch64 - CPU only
-          - os: ubuntu-22.04
-            platform: linux
-            arch: aarch64
-            backend: cpu
-            cross: true
-
           # macOS aarch64 - Metal (combined with CPU)
           - os: macos-14  # M1 runner
             platform: macos
