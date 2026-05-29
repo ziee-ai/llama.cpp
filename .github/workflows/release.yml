@@ -58,7 +58,7 @@ jobs:
             arch: aarch64
             backend: metal
 
-          # Windows x86_64 - CPU, CUDA
+          # Windows x86_64 - CPU, CUDA (12 + 13)
           - os: windows-2022
             platform: windows
             arch: x86_64
@@ -67,7 +67,14 @@ jobs:
             platform: windows
             arch: x86_64
             backend: cuda
-            cuda_version: "12.4.0"
+            cuda_version: "12.6.0"
+            version_suffix: "12.6"
+          - os: windows-2022
+            platform: windows
+            arch: x86_64
+            backend: cuda
+            cuda_version: "13.0.0"
+            version_suffix: "13.0"
 
     steps:
       # Check if this matrix entry should run based on filters
@@ -306,14 +313,23 @@ jobs:
         if: steps.filter.outputs.should_run == 'true'
         shell: bash
         run: |
-          ARCHIVE_NAME="llama-server-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}"
+          # If matrix entry has a version_suffix (e.g. CUDA 12.6 vs 13.0),
+          # append it so the multiple Windows-CUDA artifacts don't clobber
+          # each other on upload-artifact.
+          SUFFIX=""
+          if [ -n "${{ matrix.version_suffix }}" ]; then
+            SUFFIX="${{ matrix.version_suffix }}"
+          fi
+          ARCHIVE_NAME="llama-server-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}${SUFFIX}"
 
           if [ "${{ runner.os }}" == "Windows" ]; then
             7z a "${ARCHIVE_NAME}.zip" ./release/*
             echo "ARCHIVE_FILE=${ARCHIVE_NAME}.zip" >> $GITHUB_ENV
+            echo "ARTIFACT_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
           else
             tar czf "${ARCHIVE_NAME}.tar.gz" -C release .
             echo "ARCHIVE_FILE=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
+            echo "ARTIFACT_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
           fi
 
       # Upload artifacts
@@ -321,15 +337,29 @@ jobs:
         if: steps.filter.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.backend }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ARCHIVE_FILE }}
           retention-days: 7
 
-  # Separate job for CUDA (requires Docker container)
+  # Separate job for CUDA (requires Docker container).
+  # Matrix-ized for forward + back compat: CUDA 13 needs driver >=580,
+  # CUDA 12 only needs >=525, so we ship both and let the user pick.
+  # CMAKE_CUDA_ARCHITECTURES diverges too — CUDA 13 dropped Maxwell/Pascal
+  # (52, 61). Keep them in the 12.x build for old-GPU users.
   build-cuda:
-    name: Build linux-x86_64-cuda
+    name: Build linux-x86_64-cuda${{ matrix.version_suffix }}
     runs-on: ubuntu-22.04
-    container: nvidia/cuda:12.4.0-devel-ubuntu22.04
+    container: nvidia/cuda:${{ matrix.cuda_version }}-devel-ubuntu22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda_version: "12.6.0"
+            version_suffix: "12.6"
+            cuda_archs: "52;61;70;75;80;86;89;90"
+          - cuda_version: "13.0.0"
+            version_suffix: "13.0"
+            cuda_archs: "75;80;86;89;90;100;120"
     if: |
       (github.event_name == 'push') ||
       ((inputs.platform == 'all' || inputs.platform == 'linux') &&
@@ -352,7 +382,7 @@ jobs:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: linux-x86_64-cuda
+          key: linux-x86_64-cuda${{ matrix.version_suffix }}
           max-size: 500M
 
       - name: Build llama-server
@@ -374,7 +404,7 @@ jobs:
 
           # CUDA backend
           CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=52;61;70;75;80;86;89;90"
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_archs }}"
 
           # Enable ccache
           export CMAKE_C_COMPILER_LAUNCHER=ccache
@@ -419,7 +449,7 @@ jobs:
           # Create version file
           echo "llama-server" > release/version.txt
           echo "${{ github.ref_name }}" >> release/version.txt
-          echo "Backend: cuda" >> release/version.txt
+          echo "Backend: cuda ${{ matrix.version_suffix }}" >> release/version.txt
           echo "Platform: linux-x86_64" >> release/version.txt
           echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
 
@@ -430,21 +460,35 @@ jobs:
 
       - name: Create archive
         run: |
-          tar czf "llama-server-linux-x86_64-cuda.tar.gz" -C release .
-          echo "ARCHIVE_FILE=llama-server-linux-x86_64-cuda.tar.gz" >> $GITHUB_ENV
+          tar czf "llama-server-linux-x86_64-cuda${{ matrix.version_suffix }}.tar.gz" -C release .
+          echo "ARCHIVE_FILE=llama-server-linux-x86_64-cuda${{ matrix.version_suffix }}.tar.gz" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-linux-x86_64-cuda
+          name: llama-server-linux-x86_64-cuda${{ matrix.version_suffix }}
           path: ${{ env.ARCHIVE_FILE }}
           retention-days: 7
 
-  # Separate job for ROCm (requires Docker container)
+  # Separate job for ROCm (requires Docker container).
+  # Matrix-ized: ROCm doesn't have minor-version forward-compat
+  # (libamdhip64.so.6.x ABI breaks between minors), so shipping two
+  # majors is the standard way to cover both AMD's old-stable (5.7,
+  # the last 5.x — MI200/MI250 era) and current (6.1 — MI300 era +
+  # newer consumer cards). Users pick the artifact matching their
+  # rocm-dkms install.
   build-rocm:
-    name: Build linux-x86_64-rocm
+    name: Build linux-x86_64-rocm${{ matrix.version_suffix }}
     runs-on: ubuntu-22.04
-    container: rocm/dev-ubuntu-22.04:6.1.2
+    container: rocm/dev-ubuntu-22.04:${{ matrix.rocm_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rocm_version: "5.7.1"
+            version_suffix: "5.7"
+          - rocm_version: "6.1.2"
+            version_suffix: "6.1"
     if: |
       (github.event_name == 'push') ||
       ((inputs.platform == 'all' || inputs.platform == 'linux') &&
@@ -467,7 +511,7 @@ jobs:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: linux-x86_64-rocm
+          key: linux-x86_64-rocm${{ matrix.version_suffix }}
           max-size: 500M
 
       - name: Build llama-server
@@ -533,7 +577,7 @@ jobs:
           # Create version file
           echo "llama-server" > release/version.txt
           echo "${{ github.ref_name }}" >> release/version.txt
-          echo "Backend: rocm" >> release/version.txt
+          echo "Backend: rocm ${{ matrix.version_suffix }}" >> release/version.txt
           echo "Platform: linux-x86_64" >> release/version.txt
           echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/version.txt
 
@@ -544,13 +588,13 @@ jobs:
 
       - name: Create archive
         run: |
-          tar czf "llama-server-linux-x86_64-rocm.tar.gz" -C release .
-          echo "ARCHIVE_FILE=llama-server-linux-x86_64-rocm.tar.gz" >> $GITHUB_ENV
+          tar czf "llama-server-linux-x86_64-rocm${{ matrix.version_suffix }}.tar.gz" -C release .
+          echo "ARCHIVE_FILE=llama-server-linux-x86_64-rocm${{ matrix.version_suffix }}.tar.gz" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-linux-x86_64-rocm
+          name: llama-server-linux-x86_64-rocm${{ matrix.version_suffix }}
           path: ${{ env.ARCHIVE_FILE }}
           retention-days: 7
 
@@ -592,9 +636,18 @@ jobs:
 
             ### Supported Platforms and Backends
 
-            - **Linux x86_64**: CPU, CUDA, ROCm
+            - **Linux x86_64**: CPU, CUDA 12.6, CUDA 13.0, ROCm 5.7, ROCm 6.1
             - **macOS aarch64**: Metal
-            - **Windows x86_64**: CPU, CUDA
+            - **Windows x86_64**: CPU, CUDA 12.6, CUDA 13.0
+
+            ### Pick the right GPU artifact
+
+            | Backend | Artifact suffix | Driver / runtime requirement |
+            | --- | --- | --- |
+            | NVIDIA, modern | `-cuda13.0` | Driver ≥ 580, CUDA runtime 13.x. Supports Turing → Blackwell (`sm_75`–`sm_120`). |
+            | NVIDIA, broad compat | `-cuda12.6` | Driver ≥ 525, CUDA runtime 12.x. Adds Maxwell + Pascal (`sm_52`, `sm_61`) for older cards. |
+            | AMD, current | `-rocm6.1` | rocm-dkms 6.x. MI300, Navi3, modern consumer / datacenter. |
+            | AMD, legacy | `-rocm5.7` | rocm-dkms 5.7.x. MI200/MI250 era, Navi2 boxes still on 5.x. |
 
             ### Installation
 
