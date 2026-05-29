@@ -183,6 +183,18 @@ jobs:
           elif [ "${{ runner.os }}" == "Windows" ]; then
             # Disable CURL on Windows (not easily available)
             CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_CURL=OFF"
+
+            # Windows + CUDA: cmake's default MSBuild generator can't find
+            # the CUDA toolset because the vendored windows-setup-cuda action
+            # doesn't copy CUDA's *.props/.targets files into VS's
+            # BuildCustomizations\ (Jimver did, but Jimver can't install
+            # cuda_crt for CUDA 13). Switch to Ninja Multi-Config which
+            # drives nvcc directly — same trick upstream's
+            # build-cuda-windows.yml uses. Ninja is pre-installed on the
+            # windows-2022 runner image.
+            if [ "${{ matrix.backend }}" == "cuda" ]; then
+              export CMAKE_GENERATOR='Ninja Multi-Config'
+            fi
           fi
 
           # Backend-specific configuration
