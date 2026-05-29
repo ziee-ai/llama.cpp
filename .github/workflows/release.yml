@@ -63,18 +63,23 @@ jobs:
             platform: windows
             arch: x86_64
             backend: cpu
+          # Windows-CUDA uses the vendored ./.github/actions/windows-setup-cuda
+          # (pulled in via upstream merge) instead of Jimver/cuda-toolkit, because
+          # Jimver doesn't fetch the cuda_crt redist package which is required by
+          # CUDA 13+ (Jimver issue #437, still open). The action only supports
+          # specific version pins — 12.4 and 13.3 here.
           - os: windows-2022
             platform: windows
             arch: x86_64
             backend: cuda
-            cuda_version: "12.9.1"
-            version_suffix: "12.9"
+            cuda_version: "12.4"
+            version_suffix: "12.4"
           - os: windows-2022
             platform: windows
             arch: x86_64
             backend: cuda
-            cuda_version: "13.2.0"
-            version_suffix: "13.2"
+            cuda_version: "13.3"
+            version_suffix: "13.3"
 
     steps:
       # Check if this matrix entry should run based on filters
@@ -134,14 +139,15 @@ jobs:
         if: steps.filter.outputs.should_run == 'true' && runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      # Windows CUDA toolkit
+      # Windows CUDA toolkit. Uses the vendored windows-setup-cuda action
+      # (sourced from upstream ggml-org/llama.cpp), which fetches each redist
+      # zip explicitly — critically including cuda_crt for the 13.x line,
+      # which Jimver/cuda-toolkit doesn't (see issue #437).
       - name: Install CUDA toolkit (Windows)
         if: steps.filter.outputs.should_run == 'true' && runner.os == 'Windows' && matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.35
+        uses: ./.github/actions/windows-setup-cuda
         with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          cuda_version: ${{ matrix.cuda_version }}
 
       # Build with CMake
       - name: Build llama-server
@@ -638,14 +644,16 @@ jobs:
 
             - **Linux x86_64**: CPU, CUDA 12.9, CUDA 13.2, ROCm 5.7, ROCm 6.1
             - **macOS aarch64**: Metal
-            - **Windows x86_64**: CPU, CUDA 12.9, CUDA 13.2
+            - **Windows x86_64**: CPU, CUDA 12.4, CUDA 13.3
 
             ### Pick the right GPU artifact
 
             | Backend | Artifact suffix | Driver / runtime requirement |
             | --- | --- | --- |
-            | NVIDIA, modern | `-cuda13.2` | Driver ≥ 580, CUDA runtime 13.x. Supports Turing → Blackwell (`sm_75`–`sm_120`). |
-            | NVIDIA, 12.x branch | `-cuda12.9` | Driver ≥ 575, CUDA runtime 12.x. Adds Maxwell + Pascal (`sm_52`, `sm_61`) for older cards still in the 12.x driver line. |
+            | NVIDIA 13.x | Linux `-cuda13.2`, Windows `-cuda13.3` | Driver ≥ 580 (Linux) / ≥ 581 (Windows), CUDA runtime 13.x. Supports Turing → Blackwell (`sm_75`–`sm_120`). |
+            | NVIDIA 12.x | Linux `-cuda12.9`, Windows `-cuda12.4` | Driver ≥ 525 (12.4 Windows) / ≥ 575 (12.9 Linux), CUDA runtime 12.x. Adds Maxwell + Pascal (`sm_52`, `sm_61`) for older cards. |
+
+            *Note*: Linux + Windows pin to different CUDA patch versions because the two installers track different version catalogs. Both 12.x binaries are mutually-runnable with any 12.x driver runtime (`libcudart.so.12` SONAME), as long as the driver is ≥ the version listed.
             | AMD, current | `-rocm6.1` | rocm-dkms 6.x. MI300, Navi3, modern consumer / datacenter. |
             | AMD, legacy | `-rocm5.7` | rocm-dkms 5.7.x. MI200/MI250 era, Navi2 boxes still on 5.x. |
 
