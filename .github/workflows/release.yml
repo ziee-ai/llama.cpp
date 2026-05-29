@@ -67,14 +67,14 @@ jobs:
             platform: windows
             arch: x86_64
             backend: cuda
-            cuda_version: "12.6.0"
-            version_suffix: "12.6"
+            cuda_version: "12.9.1"
+            version_suffix: "12.9"
           - os: windows-2022
             platform: windows
             arch: x86_64
             backend: cuda
-            cuda_version: "13.0.0"
-            version_suffix: "13.0"
+            cuda_version: "13.2.0"
+            version_suffix: "13.2"
 
     steps:
       # Check if this matrix entry should run based on filters
@@ -354,11 +354,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - cuda_version: "12.6.0"
-            version_suffix: "12.6"
+          - cuda_version: "12.9.1"
+            version_suffix: "12.9"
             cuda_archs: "52;61;70;75;80;86;89;90"
-          - cuda_version: "13.0.0"
-            version_suffix: "13.0"
+          - cuda_version: "13.2.0"
+            version_suffix: "13.2"
             cuda_archs: "75;80;86;89;90;100;120"
     if: |
       (github.event_name == 'push') ||
@@ -636,16 +636,16 @@ jobs:
 
             ### Supported Platforms and Backends
 
-            - **Linux x86_64**: CPU, CUDA 12.6, CUDA 13.0, ROCm 5.7, ROCm 6.1
+            - **Linux x86_64**: CPU, CUDA 12.9, CUDA 13.2, ROCm 5.7, ROCm 6.1
             - **macOS aarch64**: Metal
-            - **Windows x86_64**: CPU, CUDA 12.6, CUDA 13.0
+            - **Windows x86_64**: CPU, CUDA 12.9, CUDA 13.2
 
             ### Pick the right GPU artifact
 
             | Backend | Artifact suffix | Driver / runtime requirement |
             | --- | --- | --- |
-            | NVIDIA, modern | `-cuda13.0` | Driver ≥ 580, CUDA runtime 13.x. Supports Turing → Blackwell (`sm_75`–`sm_120`). |
-            | NVIDIA, broad compat | `-cuda12.6` | Driver ≥ 525, CUDA runtime 12.x. Adds Maxwell + Pascal (`sm_52`, `sm_61`) for older cards. |
+            | NVIDIA, modern | `-cuda13.2` | Driver ≥ 580, CUDA runtime 13.x. Supports Turing → Blackwell (`sm_75`–`sm_120`). |
+            | NVIDIA, 12.x branch | `-cuda12.9` | Driver ≥ 575, CUDA runtime 12.x. Adds Maxwell + Pascal (`sm_52`, `sm_61`) for older cards still in the 12.x driver line. |
             | AMD, current | `-rocm6.1` | rocm-dkms 6.x. MI300, Navi3, modern consumer / datacenter. |
             | AMD, legacy | `-rocm5.7` | rocm-dkms 5.7.x. MI200/MI250 era, Navi2 boxes still on 5.x. |
 
