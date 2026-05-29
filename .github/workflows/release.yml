@@ -137,7 +137,7 @@ jobs:
       # Windows CUDA toolkit
       - name: Install CUDA toolkit (Windows)
         if: steps.filter.outputs.should_run == 'true' && runner.os == 'Windows' && matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda_version }}
           method: 'network'
