@@ -74,12 +74,14 @@ jobs:
             backend: cuda
             cuda_version: "12.4"
             version_suffix: "12.4"
+            cuda_archs: "52;61;70;75;80;86;89;90"
           - os: windows-2022
             platform: windows
             arch: x86_64
             backend: cuda
             cuda_version: "13.3"
             version_suffix: "13.3"
+            cuda_archs: "75;80;86;89;90;100;120"
 
     steps:
       # Check if this matrix entry should run based on filters
@@ -197,9 +199,12 @@ jobs:
             fi
           fi
 
-          # Backend-specific configuration
+          # Backend-specific configuration. cuda_archs is per-matrix-entry
+          # so 12.x can keep sm_52/sm_61 (Maxwell + Pascal) while 13.x drops
+          # them and adds sm_100/sm_120 (Blackwell). CUDA 13 fails configure
+          # with 'Unsupported gpu architecture compute_52' otherwise.
           if [ "${{ matrix.backend }}" == "cuda" ]; then
-            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=52;61;70;75;80;86;89;90"
+            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_archs }}"
           elif [ "${{ matrix.backend }}" == "rocm" ]; then
             CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIPBLAS=ON"
           elif [ "${{ matrix.backend }}" == "metal" ]; then
