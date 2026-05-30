@@ -283,12 +283,16 @@ jobs:
             ls -lh release/*.dll 2>/dev/null || echo "No DLLs found"
 
           elif [ "${{ runner.os }}" == "macOS" ]; then
-            # macOS: Copy dylibs (resolved, not symlinks) and backend .so files
-            for lib in libllama libggml libggml-base libmtmd; do
-              if [ -f "$BUILD_LIB_DIR/${lib}.dylib" ]; then
-                cp -H "$BUILD_LIB_DIR/${lib}.dylib" "release/"
-              fi
-            done
+            # macOS: Copy ALL dylibs (resolved, not symlinks) — same
+            # strategy as the Linux branch below, which globs *.so/.so.*.
+            # The previous hardcoded allowlist
+            # (libllama / libggml / libggml-base / libmtmd) silently
+            # dropped libllama-server-impl.dylib once the upstream split
+            # the server implementation into its own dylib in v0.0.2,
+            # leaving the `llama-server` launcher stub dyld-failing on
+            # load (`Library not loaded: @rpath/libllama-server-impl.dylib`).
+            # Globbing future-proofs against any further dylib splits.
+            find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.dylib" -exec cp -H {} release/ \;
 
             # Copy backend plugins (.so files)
             find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.so" -exec cp {} release/ \;
@@ -462,16 +466,23 @@ jobs:
           # Copy binary
           cp "${{ steps.find_binary.outputs.binary_path }}" "release/llama-server"
 
-          # Copy shared libraries
+          # Copy shared libraries — flat layout (alongside the
+          # binary), mirroring the build-matrix Linux CPU branch.
+          # The build sets `CMAKE_INSTALL_RPATH='$ORIGIN'` above
+          # (binary looks for libs alongside itself); packaging
+          # them into `release/lib/` instead leaves the binary
+          # unable to dlopen them on a direct `tar xzf && ./llama-server`
+          # (the documented usage — no LD_LIBRARY_PATH=./lib needed
+          # per the release notes, which also assume the flat
+          # layout).
           BUILD_LIB_DIR="build/ggml/src"
           if [ -d "$BUILD_LIB_DIR" ]; then
-            mkdir -p release/lib
-            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
             if [ -d "build/bin" ]; then
-              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
             fi
             echo "Packaged shared libraries:"
-            ls -lh release/lib/
+            ls -lh release/*.so* 2>/dev/null
           fi
 
           # Create version file
@@ -590,16 +601,20 @@ jobs:
           # Copy binary
           cp "${{ steps.find_binary.outputs.binary_path }}" "release/llama-server"
 
-          # Copy shared libraries
+          # Copy shared libraries — flat layout (alongside the
+          # binary), mirroring the build-matrix Linux CPU branch.
+          # The build sets `CMAKE_INSTALL_RPATH='$ORIGIN'` above
+          # (binary looks for libs alongside itself); packaging
+          # them into `release/lib/` instead leaves the binary
+          # unable to dlopen them on a direct `tar xzf && ./llama-server`.
           BUILD_LIB_DIR="build/ggml/src"
           if [ -d "$BUILD_LIB_DIR" ]; then
-            mkdir -p release/lib
-            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+            find "$BUILD_LIB_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
             if [ -d "build/bin" ]; then
-              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/lib/ \;
+              find "build/bin" -maxdepth 1 \( -name "*.so" -o -name "*.so.*" \) -exec cp -P {} release/ \;
             fi
             echo "Packaged shared libraries:"
-            ls -lh release/lib/
+            ls -lh release/*.so* 2>/dev/null
           fi
 
           # Create version file
@@ -688,6 +703,6 @@ jobs:
                ./llama-server --help
                ```
 
-            **Note**: GPU builds include shared libraries in the `lib/` directory. These are automatically discovered via RPATH - no need to set `LD_LIBRARY_PATH`.
+            **Note**: GPU builds include shared libraries alongside the `llama-server` binary. These are automatically discovered via RPATH (`$ORIGIN` on Linux, `@loader_path` on macOS) - no need to set `LD_LIBRARY_PATH`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
