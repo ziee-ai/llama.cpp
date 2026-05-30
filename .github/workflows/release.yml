@@ -283,12 +283,16 @@ jobs:
             ls -lh release/*.dll 2>/dev/null || echo "No DLLs found"
 
           elif [ "${{ runner.os }}" == "macOS" ]; then
-            # macOS: Copy dylibs (resolved, not symlinks) and backend .so files
-            for lib in libllama libggml libggml-base libmtmd; do
-              if [ -f "$BUILD_LIB_DIR/${lib}.dylib" ]; then
-                cp -H "$BUILD_LIB_DIR/${lib}.dylib" "release/"
-              fi
-            done
+            # macOS: Copy ALL dylibs (resolved, not symlinks) — same
+            # strategy as the Linux branch below, which globs *.so/.so.*.
+            # The previous hardcoded allowlist
+            # (libllama / libggml / libggml-base / libmtmd) silently
+            # dropped libllama-server-impl.dylib once the upstream split
+            # the server implementation into its own dylib in v0.0.2,
+            # leaving the `llama-server` launcher stub dyld-failing on
+            # load (`Library not loaded: @rpath/libllama-server-impl.dylib`).
+            # Globbing future-proofs against any further dylib splits.
+            find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.dylib" -exec cp -H {} release/ \;
 
             # Copy backend plugins (.so files)
             find "$BUILD_LIB_DIR" -maxdepth 1 -name "*.so" -exec cp {} release/ \;
